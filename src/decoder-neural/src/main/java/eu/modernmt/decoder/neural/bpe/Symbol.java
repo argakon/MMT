@@ -36,8 +36,8 @@ public class Symbol {
         return original.charAt(i + startIndex);
     }
 
-    public void append(String append) {
-        this.appendedContent += append;
+    public boolean isFinal() {
+        return this.appendedContent.endsWith(BPE.END_OF_WORD);
     }
 
 

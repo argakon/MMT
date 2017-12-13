@@ -157,10 +157,7 @@ public class BPE {
         for (String currentWord : words) {
             String[] currentSubwords = this.encode(currentWord, subwordsSet);
 
-            for (int i = 0; i < currentSubwords.length - 1; i++)
-                resultWords.add(currentSubwords[i] + this.separator);
-
-            resultWords.add(currentSubwords[currentSubwords.length - 1]);
+            Collections.addAll(resultWords, currentSubwords);
         }
         String[] resultWordsArray = new String[resultWords.size()];
         return resultWords.toArray(resultWordsArray);
@@ -187,7 +184,7 @@ public class BPE {
 
         /* get the word as a list of symbols and append the end of word sequence to the last symbol of the word */
         Symbol[] word = this.getSymbols(wordString);
-        word[word.length - 1].append(END_OF_WORD);
+        word[word.length - 1].setAppendedContent(END_OF_WORD);
 
         Set<SymbolPair> symbolPairs = this.getPairs(word);
 
@@ -233,23 +230,25 @@ public class BPE {
                 symbolPairs = getPairs(word);
         }
 
-        /* delete END_OF_WORD from the last symbol */
-        Symbol last = word[word.length - 1];
-        if (last.getAppendedContent().equals("</w>"))
-            last.setAppendedContent("");
-
-        if (last.toString().isEmpty())
-            Arrays.copyOf(word, word.length - 1);
-
+        /* add the separators to each symbol that the word was split in so far (except the last one of course) */
+        for (Symbol symbol : word)
+            if (!symbol.isFinal())
+                symbol.setAppendedContent(separator);
 
         /* split again if some symbols have been merged too much */
         if (vocabulary != null)
-            word = this.splitWithVocabulary(word, vocabulary);
+            word = this.splitUsingVocabulary(word, vocabulary);
 
-        /* return the processed word as an array of strings instead of symbols */
+        /* return the processed word as an array of strings instead of symbols.
+         * On creating the string for the last symbol remove the '</w>' from it. */
         String[] result = new String[word.length];
-        for (int i = 0; i < word.length; i++)
+        for (int i = 0; i < word.length - 1; i++)
             result[i] = word[i].toString();
+        Symbol lastSymbol = word[word.length - 1];
+        if (lastSymbol.getAppendedContent().equals(END_OF_WORD))
+            lastSymbol.setAppendedContent("");
+        if (!lastSymbol.toString().isEmpty())
+            result[word.length - 1] = lastSymbol.toString();
 
         /* put the computed result in cache */
         this.cache.put(wordString, result);
@@ -293,14 +292,126 @@ public class BPE {
     }
 
     /**
-     * This private method...
+     * This private method checks for each symbol in word if it is in-vocabulary.
+     * If it is, it is not changed.
+     * Otherwise, it means that the previous merging step has generated an out-of-vocabulary subword,
+     * so it must be splitted again until the generated subwords belong to the vocabulary.
      *
-     * @param word
-     * @param vocabulary
-     * @return
+     * @param word       the word the symbols of which must be checked
+     * @param vocabulary the vocabulary to use to check symbols
+     * @return the resulting array of Symbols
      */
-    private Symbol[] splitWithVocabulary(Symbol[] word, Set<String> vocabulary) {
-        return word;
+    private Symbol[] splitUsingVocabulary(Symbol[] word, Set<String> vocabulary) {
+
+        ArrayList<Symbol> result = new ArrayList<>();
+
+        for (Symbol symbol : word) {
+            System.out.println("Current symbol: " + symbol.toString());
+
+            if (vocabulary.contains(validateForVocabulary(symbol.toString()))) {
+                System.out.println(validateForVocabulary(symbol.toString()) + " found in vocabulary ");
+                result.add(symbol);
+            } else {
+                System.out.println(validateForVocabulary(symbol.toString()) + " not found in vocabulary: will try to split");
+                Collections.addAll(result, this.recursiveSplit(symbol, vocabulary));
+            }
+        }
+
+        return result.toArray(new Symbol[result.size()]);
+    }
+
+    /* TODO: this should be made easier by moving the vocabulary check in splitUsingVocabulary into recursiveSplit.
+    This way it is possible to make recursively this way:
+        - check if in vocab
+            - if yes, return
+            - if no split using rule and call recursivesplit on children
+    */
+
+    /**
+     * This private method recursively splits into smaller units a symbol that is not in vocabulary
+     * by reversing BPE merges until all the obtained sub-symbols are either in-vocabulary, or cannot be split further.
+     *
+     * @param symbol     the symbol to check (and possibly split)
+     * @param vocabulary the vocabulary to use to check the symbol
+     * @return the resulting array of split sub-symbols
+     */
+    private Symbol[] recursiveSplit(Symbol symbol, Set<String> vocabulary) {
+        ArrayList<Symbol> result = new ArrayList<>();
+
+        Rule rule = this.string2rule.get(symbol.toString());
+
+        /* BASE CASE 1: if no rule was found, it means that the symbol cannot be split further, so return it*/
+        if (rule == null) {
+            System.out.println("No rules found for " + symbol.toString() + ": will use it as a whole anyway");
+            return new Symbol[]{symbol};
+        }
+
+
+        /* else split the symbol using the retrieved rule */
+        SymbolPair split = this.splitByRule(symbol, rule);
+        System.out.println("Split " + symbol.toString() + " into " + split.leftSymbol.toString() + " and " + split.rightSymbol.toString());
+
+        /* BASE CASE 2(for left): if the symbol is in vocabulary, add it to list; else
+        *  RECURSIVE CASE: if the symbol is not in vocabulary, split it again recursively */
+        if (vocabulary.contains(validateForVocabulary(split.leftSymbol.toString()))) {
+            System.out.println(validateForVocabulary(split.leftSymbol.toString()) + "in vocabulary: will use it");
+            result.add(split.leftSymbol);
+        } else {
+            System.out.println(validateForVocabulary(split.leftSymbol.toString()) + "not in vocabulary: will split recursively");
+            Collections.addAll(result, recursiveSplit(split.leftSymbol, vocabulary));
+        }
+
+        /* BASE CASE 2 (for right): if the symbol is in vocabulary, add it to list; else
+        *  RECURSIVE CASE: if the symbol is not in vocabulary, split it again recursively */
+        if (vocabulary.contains(validateForVocabulary(split.rightSymbol.toString()))) {
+            System.out.println(validateForVocabulary(split.rightSymbol.toString()) + "in vocabulary: will use it");
+            result.add(split.rightSymbol);
+        } else {
+            System.out.println(validateForVocabulary(split.rightSymbol.toString()) + "in vocabulary: will use it");
+            Collections.addAll(result, recursiveSplit(split.rightSymbol, vocabulary));
+        }
+        return result.toArray(new Symbol[result.size()]);
+    }
+
+    /**
+     * This private method splits a Symbol in a SymbolPair using a Rule.
+     * This is typically during the recursive split using vocabulary.
+     * <p>
+     * It must be already verified that the symbol matches the rule.
+     *
+     * @return a SymbolPair obtained by splitting the passed Symbol using the passed BPE Rule
+     */
+    private SymbolPair splitByRule(Symbol symbol, Rule rule) {
+
+        /* the appended content for the last symbol  */
+        String leftSubword = rule.leftSubword;
+        String rightSubword = rule.rightSubword;
+
+        String rightAppendedContent = symbol.getAppendedContent();
+
+        /* if the right subword from the rule ends with the end of word, then
+        *   - it must not be considered as part of the string for the right subsymbol
+        *   - but it must be considered as part of the appended content for the right subsymbol
+        * because in BPE the separator only appears in vocabulary, and END OF WORD only appears in rules*/
+        if (rightSubword.endsWith(END_OF_WORD)) {
+            rightSubword = rightSubword.substring(0, rightSubword.length() - 4);
+            rightAppendedContent = END_OF_WORD;
+        }
+
+        Symbol left = new Symbol(
+                symbol.getOriginal(),
+                symbol.getStartIndex(),
+                symbol.getStartIndex() + leftSubword.length(),
+                separator);     // the left symbol will always have a separator because it is created from splitting
+
+
+        Symbol right = new Symbol(
+                symbol.getOriginal(),
+                symbol.getStartIndex() + leftSubword.length(),
+                symbol.getStartIndex() + leftSubword.length() + rightSubword.length(),
+                rightAppendedContent);
+
+        return new SymbolPair(left, right);
     }
 
     /**
@@ -321,6 +432,16 @@ public class BPE {
      */
     public Integer getPriorityFor(Rule rule) {
         return this.rule2priority.getOrDefault(rule, Integer.MAX_VALUE);
+    }
+
+    /**
+     * This method validates the passed string for the BPE vocabulary.
+     * It basically removes the END_OF_WORD if the string ends with it.
+     *
+     * @return the BPE-validated string
+     */
+    private String validateForVocabulary(String string) {
+        return string.endsWith(END_OF_WORD) ? string.substring(0, string.length() - 4) : string;
     }
 
 }
