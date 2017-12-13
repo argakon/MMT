@@ -8,11 +8,8 @@ import java.util.*;
  * Each of these rules has a priority value.
  */
 public class BPE {
-    public static final String END_OF_WORD = "</w>";
 
-    private final Map<Rule, Integer> rule2priority;
-    private final Map<String, Rule> string2rule;
-    private final String separator;
+    /*------------------------------------------------------------------------------------------*/
 
     /**
      * A BPE.Rule models a couple of consecutive Subwords (aka BPE termps) included in this BPE model.
@@ -28,6 +25,8 @@ public class BPE {
             this.leftSubword = leftSubword;
             this.rightSubword = rightSubword;
         }
+
+        //equals and hashcode are necessary because Rules will be put in an HashSet
 
         @Override
         public boolean equals(Object o) {
@@ -48,6 +47,9 @@ public class BPE {
         }
     }
 
+
+    /*------------------------------------------------------------------------------------------*/
+
     /**
      * A SymbolPair represents a couple of consecutive symbols that appear in a string to encode using this BPE model.
      * <p>
@@ -65,11 +67,73 @@ public class BPE {
             this.rightSymbol = rightSymbol;
         }
 
+        /**
+         * This method generates a Rule based on this SymbolPair.
+         * This is typically used when the BPE is encoding a string and must check
+         * if a SymbolPair occurring in the String matches a BPE rule or not.
+         *
+         * @return a Rule based on this SymbolPair
+         */
         public Rule asRule() {
             return new Rule(leftSymbol.toString(), rightSymbol.toString());
         }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+
+            SymbolPair that = (SymbolPair) o;
+
+            if (leftSymbol != null ? !leftSymbol.equals(that.leftSymbol) : that.leftSymbol != null) return false;
+            return rightSymbol != null ? rightSymbol.equals(that.rightSymbol) : that.rightSymbol == null;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = leftSymbol != null ? leftSymbol.hashCode() : 0;
+            result = 31 * result + (rightSymbol != null ? rightSymbol.hashCode() : 0);
+            return result;
+        }
     }
 
+
+    // ------------------------------     LRU CACHE    ------------------------------
+
+    /**
+     * A BPE.LRUCache is a LRU cache working for BPE encoded strings.
+     * <p>
+     * It is typically used to prevent encoding the same string multiple times.
+     * When a string is passed for encoding, the BPE object first check if it is already in cache;
+     * if it is, the cached result will be returned immediately.
+     */
+    private static class LRUCache extends LinkedHashMap<String, String[]> {
+        private static final int DEFAULT_SIZE = 1000;
+        private final int maxSize;
+
+        public LRUCache(int maxSize) {
+            super(16, .75f, true);
+            this.maxSize = maxSize;
+        }
+
+        public LRUCache() {
+            this(DEFAULT_SIZE);
+        }
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, String[]> entry) {
+            return this.size() > maxSize;
+        }
+    }
+
+
+    // ------------------------------     BPE    ------------------------------
+
+    public static final String END_OF_WORD = "</w>";
+    private final Map<Rule, Integer> rule2priority;
+    private final Map<String, Rule> string2rule;
+    private final String separator;
+    private final LRUCache cache;
 
     public BPE(Map<Rule, Integer> rule2priority, String separator) {
         this.rule2priority = rule2priority;
@@ -77,6 +141,7 @@ public class BPE {
         this.string2rule = new HashMap<>();
         for (Map.Entry<Rule, Integer> entry : rule2priority.entrySet())
             string2rule.put(entry.getKey().leftSubword + entry.getKey().rightSubword, entry.getKey());
+        this.cache = new LRUCache();
     }
 
     /**
@@ -102,16 +167,23 @@ public class BPE {
     }
 
     /**
-     * Method that encodes a String into a BPE using a certain vocabulary.
+     * This method encodes a String using BPE using a specific vocabulary of allowed subwords.
+     * <p>
+     * More in detail, this method first splits the passed String into a list of mono-character symbols,
+     * and then re-merges such symbols in larger subwords when they match a BPE rule.
+     * <p>
+     * Finally, if uses the vocabulary (if one is passed) to check if it has merged the subwords too much
+     * (and so if there is the possibility to split them obtaining still valid subwords).
      *
-     * @param wordString
-     * @param vocabulary
-     * @return
+     * @param wordString the word to encode using this BPE model
+     * @param vocabulary the vocabulary to use for this encoding
+     * @return the BPE-encoded string as a list of subwords
      */
     private String[] encode(String wordString, Set<String> vocabulary) {
-        //TODO: CACHE
-        // if this.cache.contains(word)
-        //       return cache.get(word)
+
+        /* search for the word in cache, and if it is found return the cached result */
+        if (this.cache.containsKey(wordString))
+            return this.cache.get(wordString);
 
         /* get the word as a list of symbols and append the end of word sequence to the last symbol of the word */
         Symbol[] word = this.getSymbols(wordString);
@@ -174,13 +246,13 @@ public class BPE {
         if (vocabulary != null)
             word = this.splitWithVocabulary(word, vocabulary);
 
-        /* TODO: put word in cache */
-
         /* return the processed word as an array of strings instead of symbols */
         String[] result = new String[word.length];
-
         for (int i = 0; i < word.length; i++)
             result[i] = word[i].toString();
+
+        /* put the computed result in cache */
+        this.cache.put(wordString, result);
 
         return result;
     }
@@ -236,6 +308,7 @@ public class BPE {
      *
      * @return the set containing the pairs of consecutive symbols obtained from the initial symbol list
      */
+
     public Integer getPriorityFor(SymbolPair pair) {
         return this.rule2priority.getOrDefault(pair.asRule(), Integer.MAX_VALUE);
     }
@@ -249,6 +322,5 @@ public class BPE {
     public Integer getPriorityFor(Rule rule) {
         return this.rule2priority.getOrDefault(rule, Integer.MAX_VALUE);
     }
-
 
 }
