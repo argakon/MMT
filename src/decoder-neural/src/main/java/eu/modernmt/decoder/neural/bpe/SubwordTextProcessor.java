@@ -103,5 +103,4 @@ public class SubwordTextProcessor {
         BPE bpe = (isSource || this.targetBPE == null) ? this.sourceBPE : this.targetBPE;
         return bpe.apply(words, isSource ? this.sourceTerms : this.targetTerms);
     }
-
 }

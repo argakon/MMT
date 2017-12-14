@@ -1,5 +1,7 @@
 package eu.modernmt.decoder.neural.bpe;
 
+import org.apache.commons.lang.StringUtils;
+
 import java.util.*;
 
 /**
@@ -65,17 +67,6 @@ public class BPE {
         public SymbolPair(Symbol leftSymbol, Symbol rightSymbol) {
             this.leftSymbol = leftSymbol;
             this.rightSymbol = rightSymbol;
-        }
-
-        /**
-         * This method generates a Rule based on this SymbolPair.
-         * This is typically used when the BPE is encoding a string and must check
-         * if a SymbolPair occurring in the String matches a BPE rule or not.
-         *
-         * @return a Rule based on this SymbolPair
-         */
-        public Rule asRule() {
-            return new Rule(leftSymbol.toString(), rightSymbol.toString());
         }
 
         @Override
@@ -200,7 +191,7 @@ public class BPE {
             /* if bigram is not in model, it means that its priority was Integer.MAX_VALUE.
             Since it was the symbol pair with minimum priority, it means that no pair in symbolPairs is in model.
             So the splitting phase is over. */
-            if (!this.rule2priority.containsKey(bigram.asRule()))
+            if (!this.hasRuleFor(bigram))
                 break;
 
             /*create the updatedWord as an arrayList instead of array initially to allow extension */
@@ -235,7 +226,7 @@ public class BPE {
             if (!symbol.isFinal())
                 symbol.setAppendedContent(separator);
 
-        /* split again if some symbols have been merged too much */
+        /*split again if some symbols have been merged too much */
         if (vocabulary != null)
             word = this.splitUsingVocabulary(word, vocabulary);
 
@@ -302,19 +293,17 @@ public class BPE {
      * @return the resulting array of Symbols
      */
     private Symbol[] splitUsingVocabulary(Symbol[] word, Set<String> vocabulary) {
+        /*remove all ENDOFWORD*/
+        /*handle the last word separately*/
+
 
         ArrayList<Symbol> result = new ArrayList<>();
 
         for (Symbol symbol : word) {
-            System.out.println("Current symbol: " + symbol.toString());
-
-            if (vocabulary.contains(validateForVocabulary(symbol.toString()))) {
-                System.out.println(validateForVocabulary(symbol.toString()) + " found in vocabulary ");
+            if (this.vocabularyContains(vocabulary, symbol))
                 result.add(symbol);
-            } else {
-                System.out.println(validateForVocabulary(symbol.toString()) + " not found in vocabulary: will try to split");
+            else
                 Collections.addAll(result, this.recursiveSplit(symbol, vocabulary));
-            }
         }
 
         return result.toArray(new Symbol[result.size()]);
@@ -338,38 +327,31 @@ public class BPE {
     private Symbol[] recursiveSplit(Symbol symbol, Set<String> vocabulary) {
         ArrayList<Symbol> result = new ArrayList<>();
 
-        Rule rule = this.string2rule.get(symbol.toString());
+        Rule rule = this.getReverseRuleFor(symbol);
 
         /* BASE CASE 1: if no rule was found, it means that the symbol cannot be split further, so return it*/
         if (rule == null) {
-            System.out.println("No rules found for " + symbol.toString() + ": will use it as a whole anyway");
             return new Symbol[]{symbol};
         }
 
-
         /* else split the symbol using the retrieved rule */
         SymbolPair split = this.splitByRule(symbol, rule);
-        System.out.println("Split " + symbol.toString() + " into " + split.leftSymbol.toString() + " and " + split.rightSymbol.toString());
 
         /* BASE CASE 2(for left): if the symbol is in vocabulary, add it to list; else
         *  RECURSIVE CASE: if the symbol is not in vocabulary, split it again recursively */
-        if (vocabulary.contains(validateForVocabulary(split.leftSymbol.toString()))) {
-            System.out.println(validateForVocabulary(split.leftSymbol.toString()) + "in vocabulary: will use it");
+        if (this.vocabularyContains(vocabulary, split.leftSymbol)) {
             result.add(split.leftSymbol);
         } else {
-            System.out.println(validateForVocabulary(split.leftSymbol.toString()) + "not in vocabulary: will split recursively");
             Collections.addAll(result, recursiveSplit(split.leftSymbol, vocabulary));
         }
 
         /* BASE CASE 2 (for right): if the symbol is in vocabulary, add it to list; else
         *  RECURSIVE CASE: if the symbol is not in vocabulary, split it again recursively */
-        if (vocabulary.contains(validateForVocabulary(split.rightSymbol.toString()))) {
-            System.out.println(validateForVocabulary(split.rightSymbol.toString()) + "in vocabulary: will use it");
+        if (this.vocabularyContains(vocabulary, split.rightSymbol))
             result.add(split.rightSymbol);
-        } else {
-            System.out.println(validateForVocabulary(split.rightSymbol.toString()) + "in vocabulary: will use it");
+        else
             Collections.addAll(result, recursiveSplit(split.rightSymbol, vocabulary));
-        }
+
         return result.toArray(new Symbol[result.size()]);
     }
 
@@ -394,7 +376,7 @@ public class BPE {
         *   - but it must be considered as part of the appended content for the right subsymbol
         * because in BPE the separator only appears in vocabulary, and END OF WORD only appears in rules*/
         if (rightSubword.endsWith(END_OF_WORD)) {
-            rightSubword = rightSubword.substring(0, rightSubword.length() - 4);
+            rightSubword = StringUtils.chomp(rightSubword, END_OF_WORD);
             rightAppendedContent = END_OF_WORD;
         }
 
@@ -414,14 +396,74 @@ public class BPE {
         return new SymbolPair(left, right);
     }
 
+
+    /* ---------------------- ACCESS METHODS ---------------------------
+    * These methods are used to access the BPE data structures (rule maps, vocabularies, ecc).
+    * One should always use these methods instead of accessing the structures directly
+    * because they take into account the fact how symbols and symbol pairs are contained in the data structures.
+    * For instance, END_OF_WORD is only used in rules, but not in vocabularies.
+    * On the other hand, the separator is only used in vocabularies, but not in
+    *
+    * These access methods
+    *
+    * */
+
+    /**
+     * This method checks whether this BPE model has a Rule matching a specific SymbolPair or not.
+     *
+     * @return true if there is a Rule matching the SymbolPair; false if there is not.
+     */
+    public boolean hasRuleFor(SymbolPair bigram) {
+        return this.rule2priority.containsKey(new Rule(
+                StringUtils.chomp(bigram.leftSymbol.toString(), separator),
+                StringUtils.chomp(bigram.rightSymbol.toString(), separator)));
+    }
+
+    /**
+     * This method checks whether this BPE model, in its reverse rules map (string to rule map)
+     * has an entry with the same string as the symbol content.
+     * <p>
+     * If the symbol has the separator as appended content, the separator is ignored because it is not employed in rule maps.
+     *
+     * @return true if there is a reverse rule matching the Symbol; false if there is not.
+     */
+    public boolean hasReverseRuleFor(Symbol symbol) {
+        return this.string2rule.containsKey(StringUtils.chomp(symbol.toString(), separator));
+    }
+
+    /**
+     * This method checks whether this BPE model, in its reverse rules map (string to rule map)
+     * has an entry with the same string as the symbol content.
+     * <p>
+     * If the symbol has the separator as appended content, the separator is ignored because it is not employed in rule maps.
+     *
+     * @return true if there is a reverse rule matching the Symbol; false if there is not.
+     */
+    public Rule getReverseRuleFor(Symbol symbol) {
+        return this.string2rule.get(StringUtils.chomp(symbol.toString(), separator));
+    }
+
+    /**
+     * This method checks whether a SymbolPair matches a Rule in this BPE model or not.
+     * It returns True if it has, false if it hasn't.
+     * <p>
+     * If the symbol has the END_OF_WORD as appended content, END_OF_WORD is ignored because it is not employed in vocabularies.
+     *
+     * @return the set containing the pairs of consecutive symbols obtained from the initial symbol list
+     */
+    public boolean vocabularyContains(Set<String> vocabulary, Symbol symbol) {
+        return vocabulary.contains(StringUtils.chomp(symbol.toString(), END_OF_WORD));
+    }
+
     /**
      * This method gets the priority of a pair of symbols in this BPE model.
      *
      * @return the set containing the pairs of consecutive symbols obtained from the initial symbol list
      */
-
     public Integer getPriorityFor(SymbolPair pair) {
-        return this.rule2priority.getOrDefault(pair.asRule(), Integer.MAX_VALUE);
+        return this.rule2priority.getOrDefault(
+                new Rule(StringUtils.chomp(pair.leftSymbol.toString(), separator), StringUtils.chomp(pair.rightSymbol.toString(), separator)),
+                Integer.MAX_VALUE);
     }
 
     /**
@@ -432,16 +474,6 @@ public class BPE {
      */
     public Integer getPriorityFor(Rule rule) {
         return this.rule2priority.getOrDefault(rule, Integer.MAX_VALUE);
-    }
-
-    /**
-     * This method validates the passed string for the BPE vocabulary.
-     * It basically removes the END_OF_WORD if the string ends with it.
-     *
-     * @return the BPE-validated string
-     */
-    private String validateForVocabulary(String string) {
-        return string.endsWith(END_OF_WORD) ? string.substring(0, string.length() - 4) : string;
     }
 
 }
