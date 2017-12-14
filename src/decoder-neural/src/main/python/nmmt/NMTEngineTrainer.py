@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import time
+import shutil
 
 import os
 from torch import nn, torch
@@ -184,7 +185,7 @@ class NMTEngineTrainer:
             scores_t = generator(out_t)
             loss_t = criterion(scores_t, targ_t.view(-1))
             pred_t = scores_t.max(1)[1]
-            num_correct_t = pred_t.data.eq(targ_t.data).masked_select(targ_t.ne(Constants.PAD).data).sum()
+            num_correct_t = pred_t.data.eq(targ_t.view(-1).data).masked_select(targ_t.ne(Constants.PAD).view(-1).data).sum()
             num_correct += num_correct_t
             loss += loss_t.data[0]
             if not evaluation:
@@ -246,6 +247,7 @@ class NMTEngineTrainer:
 
     def train_model(self, train_dataset, valid_dataset=None, save_path=None):
         state_file_path = None if save_path is None else os.path.join(save_path, 'state.json')
+        optimizer_file_path = None if save_path is None else os.path.join(save_path, 'optimizer.dat')
 
         # set the mask to None; required when the same model is trained after a translation
         if torch_is_multi_gpu():
@@ -277,6 +279,9 @@ class NMTEngineTrainer:
             validation_steps = min(self.opts.validation_steps, number_of_batches_per_epoch)
             checkpoint_steps = min(self.opts.checkpoint_steps, number_of_batches_per_epoch)
             lr_decay_steps = min(self.opts.lr_decay_steps, number_of_batches_per_epoch)
+
+            self._log('Initial optimizer parameters: lr = %f, lr_decay = %f'
+                      % (self.optimizer.lr, self.optimizer.lr_decay))
 
             for step, batch in iterator:
                 # Steps limit ------------------------------------------------------------------------------------------
@@ -351,19 +356,23 @@ class NMTEngineTrainer:
                     self._engine.save(checkpoint_file)
                     self.state.add_checkpoint(step, checkpoint_file, checkpoint_ppl)
                     self.state.save_to_file(state_file_path)
+
+                    torch.save(self.optimizer, optimizer_file_path)
+
                     self._log('Checkpoint saved: path = %s ppl = %.2f' % (checkpoint_file, checkpoint_ppl))
 
                     avg_ppl = self.state.average_perplexity()
                     checkpoint_stats = _Stats()
 
                     # Terminate policy ---------------------------------------------------------------------------------
-                    perplexity_improves = len(self.state) < self.opts.n_checkpoints or avg_ppl < previous_avg_ppl
+                    if len(self.state) >= self.opts.n_checkpoints:
+                        perplexity_improves = previous_avg_ppl - avg_ppl > 0.0001
 
-                    self._log('Terminate policy: avg_ppl = %.2f, previous_avg_ppl = %.2f, stopping = %r'
-                              % (avg_ppl, previous_avg_ppl, not perplexity_improves))
+                        self._log('Terminate policy: avg_ppl = %g, previous_avg_ppl = %g, stopping = %r'
+                                  % (avg_ppl, previous_avg_ppl, not perplexity_improves))
 
-                    if not perplexity_improves:
-                        break
+                        if not perplexity_improves:
+                            break
         except KeyboardInterrupt:
             pass
 
@@ -371,8 +380,11 @@ class NMTEngineTrainer:
 
     @staticmethod
     def merge_checkpoints(checkpoint_paths, output_path):
+        if checkpoint_paths is None or len(checkpoint_paths) < 1:
+            raise ValueError('Need to specify at least one checkpoint, %d provided.' % len(checkpoint_paths))
+
         if len(checkpoint_paths) < 2:
-            raise ValueError('Need to specify more than one checkpoint, %d provided.' % len(checkpoint_paths))
+            shutil.copyfile(checkpoint_paths[0], output_path)
 
         def __sum(source, destination):
             for key, value in source.items():
