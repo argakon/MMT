@@ -152,6 +152,9 @@ def main_create(argv):
                 raise CLIArgsException(parser, 'you must specify a validation set (remove --no-split option or use '
                                                '--validation-corpora option)')
 
+            if args.gpus == [-1]:
+                args.gpus = []
+
             training = Training.neural(name=args.engine,
                                        source_lang=args.source_lang,
                                        target_lang=args.target_lang,
@@ -618,6 +621,7 @@ def main_import(argv):
             node.import_corpus(memory['id'], corpus, callback=_import_callback)
             progressbar.complete()
         except BaseException as e:
+            node.delete_memory(memory['id'])
             progressbar.abort(repr(e))
             raise
 
