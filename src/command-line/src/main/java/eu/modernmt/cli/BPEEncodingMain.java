@@ -3,7 +3,8 @@ package eu.modernmt.cli;
 import eu.modernmt.decoder.neural.bpe.SubwordTextProcessor;
 import org.apache.commons.cli.*;
 
-import java.io.File;
+import java.io.*;
+import java.util.Date;
 
 /**
  * Created by davide on 17/12/15.
@@ -43,11 +44,39 @@ public class BPEEncodingMain {
     public static void main(String[] _args) throws Throwable {
         Args args = new Args(_args);
 
+
+//        String[] result = stp.encode(args.text.split(" "), args.isSource);
+//        for (String s : result)
+//            System.out.print(s + " ");
+
+        File input = new File(args.text);
+        File output = new File("/home/andrea/Scrivania/1000-english-words-java-new");
+
+        long init = new Date().getTime();
         SubwordTextProcessor stp = SubwordTextProcessor.loadFromFile(args.model);
 
-        String[] result = stp.encode(args.text.split(" "), args.isSource);
-        for (String s : result)
-            System.out.print(s + " ");
+        BufferedReader reader = new BufferedReader(new FileReader(input));
+        BufferedWriter writer = new BufferedWriter(new FileWriter(output));
+
+        String line = reader.readLine();
+
+        while (line != null) {
+            String[] result = stp.encode(line.split(" "), args.isSource);
+            String outputstring = "";
+            for (String s : result)
+                outputstring += (s + " ");
+
+            writer.write(outputstring + "\n");
+            line = reader.readLine();
+        }
+
+        reader.close();
+        writer.flush();
+        writer.close();
+
+        long end = new Date().getTime();
+
+        System.out.println(end - init);
     }
 
 }

@@ -11,71 +11,38 @@ package eu.modernmt.decoder.neural.bpe;
 public class Symbol {
 
     /*A Symbol is implemented as a couple of indexes on the original String that the Symbol is part of.*/
-    private int startIndex;     //the position of the first char of the original String that this Symbol contains
-    private int endIndex;       //the position of the first char of the original String that this Symbol does not contain
-    private String original;    //a reference to the original string that this Symbol refers to
-    private String appendedContent; //content that may be appended to this Symbol (e.g. separator, END_OF_WORD).
+    public final int startIndex;     //the position of the first char of the original String that this Symbol contains
+    public final int endIndex;       //the position of the first char of the original String that this Symbol does not contain
+    public final String original;    //a reference to the original string that this Symbol refers to
+    public final String suffix;   //content that may be appended to this Symbol (e.g. separator, END_OF_WORD).
 
-    public Symbol(String original, int start, int end, String appendedContent) {
+    /* a symbol should store its string forms at the beginning
+    instead of recomputing them every time using original, start, end and suffix*/
+    private final String innerContent;  // a string with the content of the symbol, without its suffix
+    private final String fullContent;   // a string with the content of the symbol, including its suffix
+
+
+    public Symbol(String original, int start, int end, String suffix) {
         this.original = original;
         this.startIndex = start;
         this.endIndex = end;
-        this.appendedContent = appendedContent;
+        this.suffix = suffix;
+
+        this.innerContent = original.substring(startIndex, endIndex);
+        this.fullContent = innerContent + suffix;
+
     }
 
-    public Symbol(String original, int start, int end) {
-        this(original, start, end, "");
-    }
+    // public Symbol(String original, int start, int end) { this(original,start,end,"");}
 
 
     public int length() {
         return endIndex - startIndex;
     }
 
-    public char charAt(int i) {
-        return original.charAt(i + startIndex);
-    }
-
-    public boolean isFinal() {
-        return this.appendedContent.endsWith(BPE.END_OF_WORD);
-    }
-
-
-    public int getStartIndex() {
-        return startIndex;
-    }
-
-    public void setStartIndex(int startIndex) {
-        this.startIndex = startIndex;
-    }
-
-    public int getEndIndex() {
-        return endIndex;
-    }
-
-    public void setEndIndex(int endIndex) {
-        this.endIndex = endIndex;
-    }
-
-    public String getOriginal() {
-        return original;
-    }
-
-    public void setOriginal(String original) {
-        this.original = original;
-    }
-
-    public String getAppendedContent() {
-        return appendedContent;
-    }
-
-    public void setAppendedContent(String appendedContent) {
-        this.appendedContent = appendedContent;
-    }
-
     @Override
     public boolean equals(Object that) {
-        return (that instanceof Symbol && this.toString().equals(that.toString()));
+        return (that instanceof Symbol && this.getFullContent().equals(((Symbol) that).getFullContent()));
     }
 
     @Override
@@ -83,13 +50,52 @@ public class Symbol {
         int result = startIndex;
         result = 31 * result + endIndex;
         result = 31 * result + (original != null ? original.hashCode() : 0);
-        result = 31 * result + (appendedContent != null ? appendedContent.hashCode() : 0);
+        result = 31 * result + (suffix != null ? suffix.hashCode() : 0);
         return result;
     }
 
     @Override
     public String toString() {
-        return (original.substring(this.startIndex, this.endIndex) + this.appendedContent);
+        return fullContent;
+    }
+
+    /**
+     * This method returns the symbol content including its suffix as a String.
+     *
+     * @return the symbol content including its suffix as a String
+     */
+    public String getFullContent() {
+        return fullContent;
+    }
+
+    /**
+     * This method returns the symbol content ignoring its suffix as a String.
+     *
+     * @return the symbol content ignoring its suffix as a String
+     */
+    public String getInnerContent() {
+        return innerContent;
+    }
+
+    /**
+     * This method checks whether the symbol suffix matches a specific string.
+     * If it does, it returns the Symbol inner content, this without the suffix; otherwise it returns symbol full content.
+     *
+     * @return the symbol content without the passed suffix
+     */
+    public String getContentWithout(String suffix) {
+        return this.suffix.equals(suffix) ? innerContent : fullContent;
+    }
+
+
+    /**
+     * Check if this Symbol has the BPE END OF WORD as a suffix;
+     * if it has, it means that it is the last symbol in its word
+     *
+     * @return true if this symbol suffix is END OF WORD; false otherwise
+     */
+    public boolean isFinal() {
+        return this.suffix.equals(BPE.END_OF_WORD);
     }
 
     /**
@@ -99,7 +105,7 @@ public class Symbol {
      * (since this method is only used when the leftmost symbol has no appended content).
      */
     public static Symbol merge(Symbol prev, Symbol next) {
-        return new Symbol(prev.original, prev.startIndex, next.endIndex, next.appendedContent);
+        return new Symbol(prev.original, prev.startIndex, next.endIndex, next.suffix);
     }
 
 }

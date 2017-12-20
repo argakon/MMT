@@ -175,7 +175,6 @@ public class BPE {
 
         /* get the word as a list of symbols and append the end of word sequence to the last symbol of the word */
         Symbol[] word = this.getSymbols(wordString);
-        word[word.length - 1].setAppendedContent(END_OF_WORD);
 
         Set<SymbolPair> symbolPairs = this.getPairs(word);
 
@@ -221,32 +220,24 @@ public class BPE {
                 symbolPairs = getPairs(word);
         }
 
-        /* add the separators to each symbol that the word was split in so far (except the last one of course) */
-        for (Symbol symbol : word)
-            if (!symbol.isFinal())
-                symbol.setAppendedContent(separator);
-
         /*split again if some symbols have been merged too much */
         if (vocabulary != null)
             word = this.splitUsingVocabulary(word, vocabulary);
 
         /* return the processed word as an array of strings instead of symbols.
-         * On creating the string for the last symbol remove the '</w>' from it. */
+         * On creating the string for the last symbol ignore its END OF WORD (and check that it is not empty). */
         String[] result = new String[word.length];
         for (int i = 0; i < word.length - 1; i++)
-            result[i] = word[i].toString();
-        Symbol lastSymbol = word[word.length - 1];
-        if (lastSymbol.getAppendedContent().equals(END_OF_WORD))
-            lastSymbol.setAppendedContent("");
-        if (!lastSymbol.toString().isEmpty())
-            result[word.length - 1] = lastSymbol.toString();
+            result[i] = word[i].getFullContent();
+        String lastString = word[word.length - 1].getContentWithout(END_OF_WORD);
+        if (!lastString.isEmpty())
+            result[word.length - 1] = lastString;
 
         /* put the computed result in cache */
         this.cache.put(wordString, result);
 
         return result;
     }
-
 
     /**
      * This private utility method transforms a string into an array of mono-character symbols.
@@ -255,13 +246,14 @@ public class BPE {
      * @return the array of obtained Symbols
      */
     private Symbol[] getSymbols(String string) {
-
-        /*list, not array, because even if we know the initial size this list will be updated in the future
-        * (removing elements) so its size will change!*/
         Symbol[] symbols = new Symbol[string.length()];
 
-        for (int i = 0; i < string.length(); i++)
-            symbols[i] = (new Symbol(string, i, i + 1));
+        /*for all chars except last one, create a new Symbol with appended content separator;
+        * for the last char of the string, create a new Symbol with appended content END OF WORD*/
+        for (int i = 0; i < string.length() - 1; i++)
+            symbols[i] = new Symbol(string, i, i + 1, separator);
+        if (string.length() - 1 >= 0)
+            symbols[string.length() - 1] = new Symbol(string, string.length() - 1, string.length(), END_OF_WORD);
 
         return symbols;
     }
@@ -286,35 +278,20 @@ public class BPE {
      * This private method checks for each symbol in word if it is in-vocabulary.
      * If it is, it is not changed.
      * Otherwise, it means that the previous merging step has generated an out-of-vocabulary subword,
-     * so it must be splitted again until the generated subwords belong to the vocabulary.
+     * so it must be split again until the generated subwords belong to the vocabulary.
      *
      * @param word       the word the symbols of which must be checked
      * @param vocabulary the vocabulary to use to check symbols
      * @return the resulting array of Symbols
      */
     private Symbol[] splitUsingVocabulary(Symbol[] word, Set<String> vocabulary) {
-        /*remove all ENDOFWORD*/
-        /*handle the last word separately*/
-
-
         ArrayList<Symbol> result = new ArrayList<>();
 
-        for (Symbol symbol : word) {
-            if (this.vocabularyContains(vocabulary, symbol))
-                result.add(symbol);
-            else
-                Collections.addAll(result, this.recursiveSplit(symbol, vocabulary));
-        }
+        for (Symbol symbol : word)
+            Collections.addAll(result, this.recursiveSplit(symbol, vocabulary));
 
         return result.toArray(new Symbol[result.size()]);
     }
-
-    /* TODO: this should be made easier by moving the vocabulary check in splitUsingVocabulary into recursiveSplit.
-    This way it is possible to make recursively this way:
-        - check if in vocab
-            - if yes, return
-            - if no split using rule and call recursivesplit on children
-    */
 
     /**
      * This private method recursively splits into smaller units a symbol that is not in vocabulary
@@ -327,30 +304,20 @@ public class BPE {
     private Symbol[] recursiveSplit(Symbol symbol, Set<String> vocabulary) {
         ArrayList<Symbol> result = new ArrayList<>();
 
-        Rule rule = this.getReverseRuleFor(symbol);
-
-        /* BASE CASE 1: if no rule was found, it means that the symbol cannot be split further, so return it*/
-        if (rule == null) {
+        /*BASE CASE 1: the symbol is in vocabulary: if so, return an array containing just the symbol itself*/
+        if (this.vocabularyContains(vocabulary, symbol))
             return new Symbol[]{symbol};
-        }
 
-        /* else split the symbol using the retrieved rule */
+        /*if the symbol is not in vocabulary, find a rule to split it
+        * BASE CASE 2: if no rule was found, it means that the symbol cannot be split further, so return it*/
+        Rule rule = this.getReverseRuleFor(symbol);
+        if (rule == null)
+            return new Symbol[]{symbol};
+
+        /* RECURSIVE CASE: if a rule was found, use it to split the symbol and recursively call this method to the children */
         SymbolPair split = this.splitByRule(symbol, rule);
-
-        /* BASE CASE 2(for left): if the symbol is in vocabulary, add it to list; else
-        *  RECURSIVE CASE: if the symbol is not in vocabulary, split it again recursively */
-        if (this.vocabularyContains(vocabulary, split.leftSymbol)) {
-            result.add(split.leftSymbol);
-        } else {
-            Collections.addAll(result, recursiveSplit(split.leftSymbol, vocabulary));
-        }
-
-        /* BASE CASE 2 (for right): if the symbol is in vocabulary, add it to list; else
-        *  RECURSIVE CASE: if the symbol is not in vocabulary, split it again recursively */
-        if (this.vocabularyContains(vocabulary, split.rightSymbol))
-            result.add(split.rightSymbol);
-        else
-            Collections.addAll(result, recursiveSplit(split.rightSymbol, vocabulary));
+        Collections.addAll(result, recursiveSplit(split.leftSymbol, vocabulary));
+        Collections.addAll(result, recursiveSplit(split.rightSymbol, vocabulary));
 
         return result.toArray(new Symbol[result.size()]);
     }
@@ -369,7 +336,7 @@ public class BPE {
         String leftSubword = rule.leftSubword;
         String rightSubword = rule.rightSubword;
 
-        String rightAppendedContent = symbol.getAppendedContent();
+        String rightAppendedContent = symbol.suffix;
 
         /* if the right subword from the rule ends with the end of word, then
         *   - it must not be considered as part of the string for the right subsymbol
@@ -381,16 +348,15 @@ public class BPE {
         }
 
         Symbol left = new Symbol(
-                symbol.getOriginal(),
-                symbol.getStartIndex(),
-                symbol.getStartIndex() + leftSubword.length(),
+                symbol.original,
+                symbol.startIndex,
+                symbol.startIndex + leftSubword.length(),
                 separator);     // the left symbol will always have a separator because it is created from splitting
 
-
         Symbol right = new Symbol(
-                symbol.getOriginal(),
-                symbol.getStartIndex() + leftSubword.length(),
-                symbol.getStartIndex() + leftSubword.length() + rightSubword.length(),
+                symbol.original,
+                symbol.startIndex + leftSubword.length(),
+                symbol.startIndex + leftSubword.length() + rightSubword.length(),
                 rightAppendedContent);
 
         return new SymbolPair(left, right);
@@ -401,11 +367,9 @@ public class BPE {
     * These methods are used to access the BPE data structures (rule maps, vocabularies, ecc).
     * One should always use these methods instead of accessing the structures directly
     * because they take into account the fact how symbols and symbol pairs are contained in the data structures.
-    * For instance, END_OF_WORD is only used in rules, but not in vocabularies.
-    * On the other hand, the separator is only used in vocabularies, but not in
-    *
-    * These access methods
-    *
+    * More in detail:
+    *   - END_OF_WORD is only used in rules, but not in vocabularies.
+    *   - the separator is only used in vocabularies, but not in rules
     * */
 
     /**
@@ -415,8 +379,8 @@ public class BPE {
      */
     public boolean hasRuleFor(SymbolPair bigram) {
         return this.rule2priority.containsKey(new Rule(
-                StringUtils.chomp(bigram.leftSymbol.toString(), separator),
-                StringUtils.chomp(bigram.rightSymbol.toString(), separator)));
+                bigram.leftSymbol.getContentWithout(separator),
+                bigram.rightSymbol.getContentWithout(separator)));
     }
 
     /**
@@ -428,7 +392,7 @@ public class BPE {
      * @return true if there is a reverse rule matching the Symbol; false if there is not.
      */
     public boolean hasReverseRuleFor(Symbol symbol) {
-        return this.string2rule.containsKey(StringUtils.chomp(symbol.toString(), separator));
+        return this.string2rule.containsKey(symbol.getContentWithout(separator));
     }
 
     /**
@@ -440,7 +404,7 @@ public class BPE {
      * @return true if there is a reverse rule matching the Symbol; false if there is not.
      */
     public Rule getReverseRuleFor(Symbol symbol) {
-        return this.string2rule.get(StringUtils.chomp(symbol.toString(), separator));
+        return this.string2rule.get(symbol.getContentWithout(separator));
     }
 
     /**
@@ -452,7 +416,7 @@ public class BPE {
      * @return the set containing the pairs of consecutive symbols obtained from the initial symbol list
      */
     public boolean vocabularyContains(Set<String> vocabulary, Symbol symbol) {
-        return vocabulary.contains(StringUtils.chomp(symbol.toString(), END_OF_WORD));
+        return vocabulary.contains(symbol.getContentWithout(END_OF_WORD));
     }
 
     /**
@@ -461,9 +425,7 @@ public class BPE {
      * @return the set containing the pairs of consecutive symbols obtained from the initial symbol list
      */
     public Integer getPriorityFor(SymbolPair pair) {
-        return this.rule2priority.getOrDefault(
-                new Rule(StringUtils.chomp(pair.leftSymbol.toString(), separator), StringUtils.chomp(pair.rightSymbol.toString(), separator)),
-                Integer.MAX_VALUE);
+        return this.getPriorityFor(new Rule(pair.leftSymbol.getContentWithout(separator), pair.rightSymbol.getContentWithout(separator)));
     }
 
     /**
