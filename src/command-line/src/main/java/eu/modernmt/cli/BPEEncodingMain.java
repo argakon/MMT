@@ -52,8 +52,9 @@ public class BPEEncodingMain {
         File input = new File(args.text);
         File output = new File("/home/andrea/Scrivania/1000-english-words-java-new");
 
-        long init = new Date().getTime();
         SubwordTextProcessor stp = SubwordTextProcessor.loadFromFile(args.model);
+
+        long init = new Date().getTime();
 
         BufferedReader reader = new BufferedReader(new FileReader(input));
         BufferedWriter writer = new BufferedWriter(new FileWriter(output));
