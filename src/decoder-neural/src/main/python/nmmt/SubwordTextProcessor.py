@@ -27,9 +27,9 @@ class _BPE:
         codes = []
 
         vocab = dict([(tuple(a[:-1]) + (a[-1] + '</w>',), b) for (a, b) in terms.items()])
-        sorted_vocab = sorted(vocab.items(), key=lambda x: x[1], reverse=True)
+        sorted_dictionary = sorted(vocab.items(), key=lambda x: x[1], reverse=True)
 
-        stats, indices = _BPE._get_pair_statistics(sorted_vocab)
+        stats, indices = _BPE._get_pair_statistics(sorted_dictionary)
         big_stats = copy.deepcopy(stats)
         # threshold is inspired by Zipfian assumption, but should only affect speed
         threshold = max(stats.values()) / 10
@@ -51,7 +51,7 @@ class _BPE:
                 break
 
             codes.append(most_frequent)
-            changes = _BPE._replace_pair(most_frequent, sorted_vocab, indices)
+            changes = _BPE._replace_pair(most_frequent, sorted_dictionary, indices)
             _BPE._update_pair_statistics(most_frequent, changes, stats, indices)
             stats[most_frequent] = 0
 

@@ -4,7 +4,10 @@ import eu.modernmt.model.corpus.MultilingualCorpus;
 import org.apache.commons.io.IOUtils;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * A SubwordTextProcessorBuilder has the responsibility to
@@ -14,21 +17,16 @@ import java.util.*;
  */
 public class SubwordTextProcessorBuilder {
 
-    private List<Symbol> symbols = null;
+    private int maxRules = 32000;
     private int maxVocabularySize = -1;
     private float vocabPruningThreshold = -1;
     private int minFrequency = 2;
     private float similarityThreshold = 0.5F;
     private String separator = "@@";
 
-    /* internal models of the builder */
-    private HashMap<String, Integer> sourceDictionary;  // counter for word occurrences in training source data (words, not subwords!)
-    private HashMap<String, Integer> targetDictionary;  // counter for word occurrences in training target data (words, not subwords!)
-    private HashMap<Character, Integer> sourceAlphabet; // counter char occurrences in training source data
-    private HashMap<Character, Integer> targetAlphabet; // counter char occurrences in training target data
 
-    public SubwordTextProcessorBuilder(List<Symbol> symbols, int maxVocabularySize, float vocabPruningThreshold, int minFrequency, float similarityThreshold, String separator) {
-        this.symbols = symbols;
+    public SubwordTextProcessorBuilder(int maxRules, int maxVocabularySize, float vocabPruningThreshold, int minFrequency, float similarityThreshold, String separator) {
+        this.maxRules = maxRules;
         this.maxVocabularySize = maxVocabularySize;
         this.vocabPruningThreshold = vocabPruningThreshold;
         this.minFrequency = minFrequency;
@@ -47,17 +45,18 @@ public class SubwordTextProcessorBuilder {
      */
     public SubwordTextProcessor build(List<MultilingualCorpus> dataSources) throws IOException {
 
+        // ----- STEP 1: COMPUTE DICTIONARIES -----
+        /* A dictionary is a counter for word occurrences (NOTE: **words**, not BPE subwords!)
+        To fill the dictionaries, scan all training data and add all the read StringPairs in model.*/
+        HashMap<String, Integer> srcDictionary = new HashMap<>();
+        HashMap<String, Integer> trgDictionary = new HashMap<>();
         MultilingualCorpus.MultilingualLineReader reader = null;
-
-        // STEP 1: compute dictionaries
-        /*for each corpus in list, scan it all and add all of its StringPairs in model.
-        * This way we will have counts for source and target dictionaries and alphabets.*/
         for (MultilingualCorpus dataSource : dataSources) {
             try {
                 reader = dataSource.getContentReader();
                 MultilingualCorpus.StringPair pair = reader.read();
                 while (pair != null) {
-                    this.addStringPair(pair);
+                    this.addStringPair(pair, srcDictionary, trgDictionary);
                     pair = reader.read();
                 }
             } finally {
@@ -65,30 +64,19 @@ public class SubwordTextProcessorBuilder {
             }
         }
 
-        // STEP 2: compute BPE models and rules
+        // ----- STEP 2: compute BPE models and rules -----
+        //TODO: parallelizable in separate threads?
+        BPE sourceBPE = BPE.train(srcDictionary, maxRules, minFrequency, separator);
+        BPE targetBPE = BPE.train(trgDictionary, maxRules, minFrequency, separator);
 
-        /* if the alphabets are too similar then use a unique set of BPE rules,
-        otherwise compute the rules for source and target languages separately */
-        BPE sourceBPE;
-        BPE targetBPE;
-        if (this.cosineSimilarity(sourceAlphabet, targetAlphabet) > this.similarityThreshold) {
-            sourceBPE = BPE.learnFromTerms(this.merge(sourceDictionary, targetDictionary), sourceDictionary, symbols, minFrequency, separator);
-            targetBPE = null;
-        } else {
-            sourceBPE = BPE.learnFromTerms(sourceDictionary, symbols, minFrequency, separator);
-            targetBPE = BPE.learnFromTerms(targetDictionary, symbols, minFrequency, separator);
-        }
+        // ----- STEP 3: create vocabularies ------
+        /* vocabularies are computed by applying the BPE rules found in step2 to the dictionaries computed in step 1 */
+        //TODO: parallelizable in separate threads?
+        Set<String> sourceVocabulary = this.collectSubwords(srcDictionary, sourceBPE);
+        Set<String> targetVocabulary = this.collectSubwords(trgDictionary, targetBPE);
 
-
-        // STEP 3: create vocabularies containing the valid subwords for the SubwordsTextProcessor to build
-        /* vocabularies are computed by applying the BPE rules found in step2 to the dictionaries computed in step 1*/
-        Set<String> sourceTerms = this.collectSubwords(sourceDictionary, sourceBPE);
-        Set<String> targetTerms = this.collectSUbwords(targetDictionary, targetBPE);
-
-        return new
-
-                SubwordTextProcessor(sourceCodes, targetCodes, sourceVocabulary, targetVocabulary);
-
+        //return new SubwordTextProcessor(sourceCodes, targetCodes, sourceVocabulary, targetVocabulary);
+        return null;
     }
 
     /**
@@ -97,38 +85,15 @@ public class SubwordTextProcessorBuilder {
      *
      * @param pair the stringpair to add in the model
      */
-    private void addStringPair(MultilingualCorpus.StringPair pair) {
+    private void addStringPair(MultilingualCorpus.StringPair pair, HashMap<String, Integer> srcDictionary, HashMap<String, Integer> trgDictionary) {
 
         /*add the source words and chars to sourceDictionary and sourceAlphabet counters*/
-        for (String word : pair.source.trim().split(" ")) {
-            if (sourceDictionary.containsKey(word))
-                sourceDictionary.put(word, sourceDictionary.get(word) + 1);
-            else
-                sourceDictionary.put(word, 1);
-
-            for (char character : word.toCharArray()) {
-                if (sourceAlphabet.containsKey(character))
-                    sourceAlphabet.put(character, sourceAlphabet.get(character) + 1);
-                else
-                    sourceAlphabet.put(character, 1);
-            }
-        }
+        for (String word : pair.source.trim().split("\\s+"))    //split by any whitespace char appearing 1 or more times
+            srcDictionary.put(word, srcDictionary.getOrDefault(word, 0) + 1);
 
         /*add the target words and chars to targetDictionary and targetAlphabet counters*/
-        for (String word : pair.target.trim().split(" ")) {
-            if (targetDictionary.containsKey(word))
-                targetDictionary.put(word, targetDictionary.get(word) + 1);
-            else
-                targetDictionary.put(word, 1);
-
-            for (char character : word.toCharArray()) {
-                if (targetAlphabet.containsKey(character))
-                    targetAlphabet.put(character, targetAlphabet.get(character) + 1);
-                else
-                    targetAlphabet.put(character, 1);
-            }
-        }
-
+        for (String word : pair.target.trim().split("\\s+"))    //split by any whitespace char appearing 1 or more times
+            trgDictionary.put(word, trgDictionary.getOrDefault(word, 0) + 1);
     }
 
 
@@ -156,8 +121,8 @@ public class SubwordTextProcessorBuilder {
         }
 
         /* prune the vocabulary and reduce its size if necessary */
-        subwordCounts = this.prune(subwordCounts);
-        subwordCounts = this.reduce(subwordCounts);
+        //subwordCounts = this.prune(subwordCounts);
+        //subwordCounts = this.reduce(subwordCounts);
 
         return subwordCounts.keySet();
     }
@@ -165,6 +130,7 @@ public class SubwordTextProcessorBuilder {
     /**
      * This pruning method removes the least frequent subwords from a passed subwordCounts map
      * until the result only contains vocabPruningThreshold % of its initial overall value
+     *
      * @param subwordCounts
      */
     private void prune(HashMap<String, Integer> subwordCounts) {
@@ -173,7 +139,7 @@ public class SubwordTextProcessorBuilder {
         if (this.vocabPruningThreshold == -1)
             return;
 
-        LinkedHashMap<String, Integer> sorted = /* ... sort */;
+        //LinkedHashMap<String, Integer> sorted = /* ... sort */;
 
         /* compute the overall sum of the occurrences of all subwords */
         int total = 0;
@@ -183,29 +149,6 @@ public class SubwordTextProcessorBuilder {
         for (Map.Entry<String, Integer> entry : subwordCounts.entrySet()) {
 
         }
-
-        /* lui calcola una soglia di occorrenze oltre le quali una subword non deve essere usata */
-        /* per farlo, ordina l'entryset in senso decrescente, quindi per ogni subword
-            - aggiorna un counter parziale con la somma dei counts visti finora
-            - se il counter aggiornato supera total * vocabthreshold, allora segna che la threshold di frequenza da superare è la frequenza di quell'elemento
-                    (essendo gli elementi
-                    ma segna
-        */
-         */
-        counter = 0
-        threshold = 0
-
-        for w, c in terms.most_common():        #?????
-        counter += c
-        if counter >= total * self._vocab_pruning_threshold:
-        threshold = c
-        break
-
-        for w, c in terms.items():
-        if c<threshold:
-        del terms[ w]
-
-        return terms
 
     }
 }

@@ -3,6 +3,8 @@ package eu.modernmt.decoder.neural.bpe;
 import org.apache.commons.lang.StringUtils;
 
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Created by andrea on 07/12/17.
@@ -10,115 +12,6 @@ import java.util.*;
  * Each of these rules has a priority value.
  */
 public class BPE {
-
-    /*------------------------------------------------------------------------------------------*/
-
-    /**
-     * A BPE.Rule models a couple of consecutive Subwords (aka BPE termps) included in this BPE model.
-     * It thus represents how a string should be splitted in two terms to make it compliant to this BPE model.
-     * <p>
-     * Since a rule is immutable, it is implemented using Strings.
-     */
-    public static class Rule {
-        public final String leftSubword;
-        public final String rightSubword;
-
-        public Rule(String leftSubword, String rightSubword) {
-            this.leftSubword = leftSubword;
-            this.rightSubword = rightSubword;
-        }
-
-        //equals and hashcode are necessary because Rules will be put in an HashSet
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-
-            Rule rule = (Rule) o;
-
-            if (leftSubword != null ? !leftSubword.equals(rule.leftSubword) : rule.leftSubword != null) return false;
-            return rightSubword != null ? rightSubword.equals(rule.rightSubword) : rule.rightSubword == null;
-        }
-
-        @Override
-        public int hashCode() {
-            int result = leftSubword != null ? leftSubword.hashCode() : 0;
-            result = 31 * result + (rightSubword != null ? rightSubword.hashCode() : 0);
-            return result;
-        }
-    }
-
-
-    /*------------------------------------------------------------------------------------------*/
-
-    /**
-     * A SymbolPair represents a couple of consecutive symbols that appear in a string to encode using this BPE model.
-     * <p>
-     * A Symbol is a text that may or may not correspond to a BPE Subword.
-     * Symbols are typically used by a BPE model while progressively splitting and re-merging a string to encode.
-     * <p>
-     * Since symbols are often subject to changes (i.e. replace and concat), they are implemented as Symbols.
-     */
-    protected static class SymbolPair {
-        public final Symbol leftSymbol;
-        public final Symbol rightSymbol;
-
-        public SymbolPair(Symbol leftSymbol, Symbol rightSymbol) {
-            this.leftSymbol = leftSymbol;
-            this.rightSymbol = rightSymbol;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (o == null || getClass() != o.getClass()) return false;
-
-            SymbolPair that = (SymbolPair) o;
-
-            if (leftSymbol != null ? !leftSymbol.equals(that.leftSymbol) : that.leftSymbol != null) return false;
-            return rightSymbol != null ? rightSymbol.equals(that.rightSymbol) : that.rightSymbol == null;
-        }
-
-        @Override
-        public int hashCode() {
-            int result = leftSymbol != null ? leftSymbol.hashCode() : 0;
-            result = 31 * result + (rightSymbol != null ? rightSymbol.hashCode() : 0);
-            return result;
-        }
-    }
-
-
-    // ------------------------------     LRU CACHE    ------------------------------
-
-    /**
-     * A BPE.LRUCache is a LRU cache working for BPE encoded strings.
-     * <p>
-     * It is typically used to prevent encoding the same string multiple times.
-     * When a string is passed for encoding, the BPE object first check if it is already in cache;
-     * if it is, the cached result will be returned immediately.
-     */
-    private static class LRUCache extends LinkedHashMap<String, String[]> {
-        private static final int DEFAULT_SIZE = 1000;
-        private final int maxSize;
-
-        public LRUCache(int maxSize) {
-            super(16, .75f, true);
-            this.maxSize = maxSize;
-        }
-
-        public LRUCache() {
-            this(DEFAULT_SIZE);
-        }
-
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<String, String[]> entry) {
-            return this.size() > maxSize;
-        }
-    }
-
-
-    // ------------------------------     BPE    ------------------------------
 
     public static final String END_OF_WORD = "</w>";
     private final Map<Rule, Integer> rule2priority;
@@ -134,6 +27,293 @@ public class BPE {
             string2rule.put(entry.getKey().leftSubword + entry.getKey().rightSubword, entry.getKey());
         this.cache = new LRUCache();
     }
+
+    // --------------------- TRAINING METHODS ---------------------
+
+    public static BPE train(HashMap<String, Integer> stringDictionary, int maxRules, float minFrequency, String separator) {
+        HashMap<Rule, Integer> rule2priority = new HashMap<>();
+
+        /* The training makes use of four main data structures.
+         *   - SORTED DICTIONARY: main data structure in training.
+         *           It is a list of entries "word as a sequence of symbols -> original term frequency".
+         *           Note: it has an entry for each word in the original corpora: not subwords, but whole terms.
+         *           The sorted dictionary is sorted by decreasing frequency.
+         *
+         *   - DICTIONARY STATS: secondary data structure depending on the sorted dictionary.
+         *           It is a map with entries "symbolPair -> corresponding overall frequency in sortedDictionary"
+         *           The overall frequency is computed as the sum of the frequencies of all terms where the pair occurs.
+         *
+         *   - DICTIONARY BIGSTATS: secondary data structure depending on the sorted dictionary.
+         *           It is a map with same structure as stats. When stats is pruned, big stats is not
+         *           (it is just updated differently, never "forgetting" symbol pairs)
+         *           so it keeps full statistics for when we need to access pruned items.
+         *
+         *   - DICTIONARY INDEX: secondary data structure for accessing the sorted dictionary by symbol pair.
+         *           It contains entries "symbolPair -> corresponding positions where the symbolPair occurs in dictionary".
+         *           For each position, it also stores the occurrences of that symbolPair in the dictionary term.
+         *   */
+        ArrayList<Map.Entry<Symbol[], Integer>> sortedDictionary = new ArrayList<>();
+        Map<Symbol.Pair, Integer> stats = new HashMap<>();
+        Map<Symbol.Pair, Map<Integer, Integer>> indices = new HashMap<>();
+        Map<Symbol.Pair, Integer> bigStats = new HashMap<>();
+
+
+        // ------------ Data Structures Initialization ------------
+
+        stringDictionary.entrySet().stream().sorted(Map.Entry.comparingByValue()).forEach(entry -> {
+            Symbol[] termSymbols = splitIntoSymbols(entry.getKey(), separator, ""); //split in mono-char symbols
+            int frequency = entry.getValue();
+            sortedDictionary.add(new AbstractMap.SimpleEntry<>(termSymbols, frequency));
+            int positionInDict = sortedDictionary.size() - 1;
+
+            for (Symbol.Pair pair : getPairs(termSymbols)) {
+                //put pair into stats or update its value anyway
+                stats.put(pair, stats.getOrDefault(pair, 0) + frequency);
+
+                /* create a new nestedMap under indices(pair) if this pair was still unseen before;
+                increment by one the nestedMap value under positionInDict
+                */
+                if (!indices.containsKey(pair))
+                    indices.put(pair, new HashMap<>());
+                indices.get(pair).put(positionInDict, indices.get(pair).getOrDefault(positionInDict, 0) + 1);
+            }
+        });
+        bigStats.putAll(stats);
+
+        // ------------ BPE rules definition ------------
+
+        /*threshold is inspired by Zipfian assumption, but should only affect speed*/
+        float threshold = Collections.max(stats.values()) / 10F;
+
+        int ruleCount = 0;
+        while (ruleCount < maxRules) {
+
+            // find the most frequent pair and make it the new rule, using its frequency for computing the rule priority
+            Symbol.Pair mostFrequentPair = null;
+            int frequency = 0;
+
+            if (!stats.isEmpty()) {
+                mostFrequentPair = Collections.max(stats.keySet(), Comparator.comparing(stats::get));
+                frequency = stats.get(mostFrequentPair);
+            }
+            /* if this is not the first iteration and the frequency of the mostFrequentPair is lesser than threshold,
+            * it is possible that we have missed the best pair.
+            * This is possible because we have looked for it in stats, that has been already pruned.
+            * It is also possible that after pruning stats has become empty.
+            * In both cases, re-prune (why?) and look in bigStats for the mostFrequentPair*/
+            if (stats.isEmpty() || (ruleCount > 0 && stats.get(mostFrequentPair) < threshold)) {
+                /*re-prune (why?) and overwrite stats with bigStats*/
+                prunePairStatistics(stats, bigStats, threshold);
+                stats.clear();
+                stats.putAll(bigStats);
+
+                /* recompute the mostFrequentPair and its frequency on the new stats (which are the previous bigStats */
+                mostFrequentPair = Collections.max(stats.keySet(), Comparator.comparing(stats::get));
+                frequency = stats.get(mostFrequentPair);
+
+                /* recompute the threshold and prune again statistics*/
+                threshold = stats.get(mostFrequentPair) * ruleCount / (ruleCount * 10000F);
+                prunePairStatistics(stats, bigStats, threshold);
+            }
+
+            /* if the mostFrequentPair is lesser than the threshold, then the training is over */
+            if (frequency < threshold)
+                break;
+
+            /* now that the pair has been found, put a new rule for it in rule2priority and update stats, dictionary and indices*/
+            rule2priority.putIfAbsent(new Rule(mostFrequentPair, separator), frequency);
+            List<PairChange> changes = BPE.mergePair(mostFrequentPair, separator, sortedDictionary, indices);
+            updatePairStatistics(mostFrequentPair, separator, changes, stats, indices);
+            stats.put(mostFrequentPair, 0);
+
+            /* once in 100 rules, prune statistics again */
+            if (ruleCount % 100 == 0)
+                BPE.prunePairStatistics(stats, bigStats, threshold);
+
+            ruleCount++;
+        }
+
+        return new BPE(rule2priority, separator);
+    }
+
+    /**
+     * This private method prunes the passed statistics map to maximize efficiency;
+     * it accordingly updates the bigStats map
+     *
+     * @param stats     map containing entries like [symbolPair -> frequency in sortedDictionary]
+     * @param bigStats  map identical to stats, but it gets updated differently during pruning
+     * @param threshold threshold to use for pruning the stats
+     */
+    private static void prunePairStatistics(Map<Symbol.Pair, Integer> stats, Map<Symbol.Pair, Integer> bigStats, float threshold) {
+        for (Map.Entry<Symbol.Pair, Integer> entry : stats.entrySet()) {
+            Symbol.Pair pair = entry.getKey();
+            Integer frequency = entry.getValue();
+            if (frequency < threshold) {
+                stats.remove(pair);
+                //what? when can frequency be < 0?
+                bigStats.put(pair, frequency < 0 ? bigStats.get(pair) + frequency : frequency);
+            }
+        }
+    }
+
+
+    /**
+     * This private class is used to store the data on an updated symbol pair
+     */
+    private static class PairChange {
+        public final int positionInDictionary;
+        public final int frequencyInDictionary;
+        public final Symbol[] oldWord;
+        public final Symbol[] newWord;
+
+        private PairChange(int positionInDictionary, int frequencyInDictionary, Symbol[] oldWord, Symbol[] newWord) {
+            this.positionInDictionary = positionInDictionary;
+            this.frequencyInDictionary = frequencyInDictionary;
+            this.oldWord = oldWord;
+            this.newWord = newWord;
+        }
+    }
+
+    /**
+     * This private method replaces all occurrences of a symbol pair ('A', 'B') with a new symbol 'AB'
+     * and it updates the sortedDictionary
+     *
+     * @param pair             the SymbolPair with the two symbols to merge
+     * @param sortedDictionary list that contains, for each word in data sources (not subword: word) represented as symbol list,
+     *                         the corresponding frequency in data sources. It is ordered by decreasing frequency
+     * @param indices          map that holds for each symbolpair, the positions in sortedDictionary where it occurs.
+     *                         for each position in sortedDictionary, it also stores the amount of times it occurs there.
+     */
+    private static List<PairChange> mergePair(Symbol.Pair pair, String separator, ArrayList<Map.Entry<Symbol[], Integer>> sortedDictionary, Map<Symbol.Pair, Map<Integer, Integer>> indices) {
+
+        List<PairChange> changes = new ArrayList<>();
+
+        String first = pair.leftSymbol.getContentWithout(separator);
+        String second = pair.rightSymbol.getContentWithout(separator);
+
+        //the symbol to merge, as a unique string
+        String pairString = (first + second).replace("\\", "\\\\");
+
+        String regex = "(?<!\\S)" + Pattern.quote(first + " " + second) + "(?!\\S)";
+        Pattern pattern = Pattern.compile(regex);
+        Map<Integer, Integer> pos2freq = indices.get(pair);
+        for (Map.Entry<Integer, Integer> indexEntry : pos2freq.entrySet()) {
+            int posInDict = indexEntry.getKey();
+            int freqInDict = indexEntry.getValue();
+
+            if (freqInDict < 1)
+                continue;
+
+            Map.Entry<Symbol[], Integer> dictEntry = sortedDictionary.get(posInDict);
+
+            /*get the word in dict where the the symbolpair to merge occurred,
+            rebuild the original old string (using whitespaces as string separators),
+            replace the first occurrence of pairString in the rebuilt old string using regex,
+            resplit the newly obtained string (with replacement performed) in symbols*/
+            Symbol[] oldWord = dictEntry.getKey();
+            int wordFrequency = dictEntry.getValue();
+            String oldWordString = mergeIntoString(oldWord, separator, " ");
+            Matcher matcher = pattern.matcher(pairString);
+            String newWordString = matcher.replaceFirst(oldWordString);
+            Symbol[] newWord = splitIntoSymbols(newWordString, separator, " ");
+
+            /*update sortedDictionary*/
+            sortedDictionary.add(posInDict, new AbstractMap.SimpleEntry<>(newWord, wordFrequency));
+            changes.add(new PairChange(posInDict, wordFrequency, oldWord, newWord));
+        }
+
+        return changes;
+    }
+
+
+    /**
+     * This private method updates the stats map and indices map based on a list of changes performed on a Symbol Pair.
+     * <p>
+     * This method is typically called immediately after the symbol pair has been merged,
+     * so only pairs that overlap with occurrences of this pair are affected, and need to be updated,
+     * in the stats and indices data structures
+     * <p>
+     *
+     * @param pair
+     * @param changes
+     * @param stats
+     * @param indices
+     */
+    private static void updatePairStatistics(Symbol.Pair pair, String separator, List<PairChange> changes, Map<Symbol.Pair, Integer> stats, Map<Symbol.Pair, Map<Integer, Integer>> indices) {
+        stats.put(pair, 0);
+        indices.put(pair, new HashMap<>());
+        Symbol mergedSymbol = new Symbol(pair.leftSymbol.original, pair.leftSymbol.startIndex, pair.rightSymbol.endIndex, pair.rightSymbol.suffix);
+
+        for (PairChange change : changes) {
+            //find all instances of pair, and update frequency/indices around it
+            while (true) {
+                for (int i = 0; i < change.oldWord.length - 1; i++) {
+
+                    // if the leftSymbol and rightSymbol are contained consecutively in the old word
+                    if (pair.leftSymbol.equals(change.oldWord[i]) && pair.rightSymbol.equals(change.oldWord[i + 1])) {
+
+                        /* If there was at least another symbol before the leftSymbol occurrence,
+                        it means that the oldWord is like "A B C" and we are merging "(B, C)" into BC.
+                        In this case A is not be followed by B anymore, but by BC, so:
+                            - the frequency of (A, B) in stats must be reduced by the frequency of the old word in sortedDictionary.
+                            - in the indices entry for (A, B), the amount of occurrences in oldWord must be reduced by 1.
+                            - the frequency of (A, BC) in stats must be increased by frequency of the old word in sortedDictionary.
+                            - in the indices entry for (A, BC), the amount of occurrences in oldWord must be increased by 1.*/
+                        if (i > 0) {
+                            Symbol.Pair oldPrevPair = new Symbol.Pair(change.oldWord[i - 1], change.oldWord[i]);
+                            Symbol.Pair newPrevPair = new Symbol.Pair(change.oldWord[i - 1], mergedSymbol);
+
+                            stats.put(oldPrevPair, stats.getOrDefault(oldPrevPair, 0) - change.frequencyInDictionary);
+                            Map<Integer, Integer> oldPrevPairIndexEntry = indices.getOrDefault(oldPrevPair, new HashMap<>());
+                            oldPrevPairIndexEntry.put(change.positionInDictionary,
+                                    oldPrevPairIndexEntry.getOrDefault(change.positionInDictionary, 0) - 1);
+
+                            stats.put(newPrevPair, stats.getOrDefault(newPrevPair, 0) + change.frequencyInDictionary);
+                            Map<Integer, Integer> newPrevPairIndexEntry = indices.getOrDefault(newPrevPair, new HashMap<>());
+                            newPrevPairIndexEntry.put(change.positionInDictionary,
+                                    newPrevPairIndexEntry.getOrDefault(change.positionInDictionary, 0) + 1);
+                        }
+
+                        /* If there was at least another symbol after the leftSymbol occurrence,
+                        it means that the oldWord is like "B C D" and we are merging "(B, C)" into BC.
+                        In this case D is not be preceded by C anymore, but by BC, so:
+                            - the frequency of (C, D) in stats must be reduced by the frequency of the old word in sortedDictionary.
+                            - in the indices entry for (C, D), the amount of occurrences in oldWord must be reduced by 1.
+                            - the frequency of (BC, D) in stats must be increased by the frequency of the old word in sortedDictionary.
+                            - in the indices entry for (BC, D), the amount of occurrences in oldWord must be increased by 1.
+
+                        However, SKIP the reducing and increasing for the old and new nextpair
+                        if the sequence is like A B C B C, because the frequency of "C B" will be reduced by the previous code block*/
+                        if (i + 2 < change.oldWord.length) {
+
+                            boolean skip = (i + 3 < change.oldWord.length) && (change.oldWord[i + 3].equals(pair.leftSymbol));
+
+                            if (!skip) {
+                                Symbol.Pair oldNextPair = new Symbol.Pair(change.oldWord[i + 1], change.oldWord[i + 2]);
+                                Symbol.Pair newNextPair = new Symbol.Pair(mergedSymbol, change.oldWord[i + 2]);
+
+                                stats.put(oldNextPair, stats.get(oldNextPair) - change.frequencyInDictionary);
+                                Map<Integer, Integer> oldNextPairIndexEntry = indices.getOrDefault(oldNextPair, new HashMap<>());
+                                oldNextPairIndexEntry.put(change.positionInDictionary,
+                                        oldNextPairIndexEntry.getOrDefault(change.positionInDictionary, 0) - 1);
+
+                                stats.put(newNextPair, stats.getOrDefault(newNextPair, 0) + change.frequencyInDictionary);
+                                Map<Integer, Integer> newNextPairIndexEntry = indices.getOrDefault(newNextPair, new HashMap<>());
+                                newNextPairIndexEntry.put(change.positionInDictionary,
+                                        newNextPairIndexEntry.getOrDefault(change.positionInDictionary, 0) + 1);
+                            }
+                        }
+
+                        /*since the i+1 symbol was merged with the i symbol, in next iteration go to the following one */
+                        i += 1;
+                    }
+                }
+            }
+        }
+    }
+
+
+    // --------------------- APPLICATION METHODS ---------------------
 
     /**
      * Encode the passed strings and return the resulting subwords
@@ -174,9 +354,9 @@ public class BPE {
             return this.cache.get(wordString);
 
         /* get the word as a list of symbols and append the end of word sequence to the last symbol of the word */
-        Symbol[] word = this.getSymbols(wordString);
+        Symbol[] word = splitIntoSymbols(wordString, this.separator, "");
 
-        Set<SymbolPair> symbolPairs = this.getPairs(word);
+        Set<Symbol.Pair> symbolPairs = getPairs(word);
 
         /* if the initial string is empty or contains one char only, it can not be split
            so the BPE encoding is the string itself (in an array) */
@@ -185,7 +365,7 @@ public class BPE {
 
         while (true) {
             /* get the SymbolPair with minimum priority in the BPE rules */
-            SymbolPair bigram = Collections.min(symbolPairs, Comparator.comparing(this::getPriorityFor));
+            Symbol.Pair bigram = Collections.min(symbolPairs, Comparator.comparing(this::getPriorityFor));
 
             /* if bigram is not in model, it means that its priority was Integer.MAX_VALUE.
             Since it was the symbol pair with minimum priority, it means that no pair in symbolPairs is in model.
@@ -240,41 +420,6 @@ public class BPE {
     }
 
     /**
-     * This private utility method transforms a string into an array of mono-character symbols.
-     * Therefore, each symbol in array is a Symbol only containing one character.
-     *
-     * @return the array of obtained Symbols
-     */
-    private Symbol[] getSymbols(String string) {
-        Symbol[] symbols = new Symbol[string.length()];
-
-        /*for all chars except last one, create a new Symbol with appended content separator;
-        * for the last char of the string, create a new Symbol with appended content END OF WORD*/
-        for (int i = 0; i < string.length() - 1; i++)
-            symbols[i] = new Symbol(string, i, i + 1, separator);
-        if (string.length() - 1 >= 0)
-            symbols[string.length() - 1] = new Symbol(string, string.length() - 1, string.length(), END_OF_WORD);
-
-        return symbols;
-    }
-
-    /**
-     * This private method gets all pairs of consecutive symbols in a symbol array.
-     * It returns a set containing all the found pairs
-     * (which means that returned pairs are not ordered and duplicates are skipped).
-     *
-     * @return the set containing the pairs of consecutive symbols obtained from the initial symbol array
-     */
-    private Set<SymbolPair> getPairs(Symbol[] symbols) {
-        Set<SymbolPair> pairs = new HashSet<>();
-
-        for (int i = 0; i < symbols.length - 1; i++)
-            pairs.add(new SymbolPair(symbols[i], symbols[i + 1]));
-
-        return pairs;
-    }
-
-    /**
      * This private method checks for each symbol in word if it is in-vocabulary.
      * If it is, it is not changed.
      * Otherwise, it means that the previous merging step has generated an out-of-vocabulary subword,
@@ -315,22 +460,92 @@ public class BPE {
             return new Symbol[]{symbol};
 
         /* RECURSIVE CASE: if a rule was found, use it to split the symbol and recursively call this method to the children */
-        SymbolPair split = this.splitByRule(symbol, rule);
+        Symbol.Pair split = this.splitByRule(symbol, rule);
         Collections.addAll(result, recursiveSplit(split.leftSymbol, vocabulary));
         Collections.addAll(result, recursiveSplit(split.rightSymbol, vocabulary));
 
         return result.toArray(new Symbol[result.size()]);
     }
 
+    /* ------------- UTILITY METHODS -------------- */
+
     /**
-     * This private method splits a Symbol in a SymbolPair using a Rule.
+     * This private utility method transforms a string into an array of symbols
+     * splitting the string in correspondence of stringSeparator.
+     * Each symbol in array is given a symbolSeparator as a suffix, except for the last one, that is given END_OF_WORD.
+     * It is the inverse method of mergeIntoString,
+     *
+     * @param string          the string to split into symbols
+     * @param symbolSeparator the separator that symbols use in the BPE model
+     * @param stringSeparator the separator in the string in base of which to split the string into symbols
+     * @return the array of obtained Symbols
+     */
+    private static Symbol[] splitIntoSymbols(String string, String symbolSeparator, String stringSeparator) {
+        String[] splittedString = string.split(stringSeparator);
+
+        Symbol[] symbols = new Symbol[splittedString.length];
+
+        int position = 0;
+
+        /*for all substring obtained except the last one, create a new Symbol with appended content separator;
+        * for the last char of the string, create a new Symbol with appended content END OF WORD*/
+        for (int i = 0; i < splittedString.length - 1; i++) {
+            String subString = splittedString[i];
+            symbols[position] = new Symbol(string, position, position + subString.length(), symbolSeparator);
+            position += splittedString.length + stringSeparator.length();
+        }
+
+        if (symbols.length > 0)
+            symbols[symbols.length - 1] = new Symbol(string, position, string.length(), END_OF_WORD);
+
+        return symbols;
+    }
+
+    /**
+     * This private utility method merges a list of symbols into a unique string.
+     * For the passed symbols, the separator is ignored whereas the END_OF_WORD is kept.
+     * Consecutive symbols are merged with a stringSeparator between them.
+     * It is the inverse method of splitIntoSymbols, and is typically used during training to update the stats data structures.
+     *
+     * @param symbols         an array containing the symbols to merge
+     * @param symbolSeparator the separator that symbols use in the BPE model
+     * @param stringSeparator the separator to use between consecutive symbols in the result string
+     * @return the string obtained merging the passed symbols.
+     */
+    private static String mergeIntoString(Symbol[] symbols, String symbolSeparator, String stringSeparator) {
+        StringBuilder builder = new StringBuilder();
+        for (Symbol symbol : symbols)
+            builder.append(symbol.getContentWithout(symbolSeparator)).append(stringSeparator);
+        return builder.toString();
+    }
+
+
+    /**
+     * This private utility method gets all pairs of consecutive symbols in a symbol array.
+     * It returns a set containing all the found pairs
+     * (which means that returned pairs are not ordered and duplicates are skipped).
+     *
+     * @return the set containing the pairs of consecutive symbols obtained from the initial symbol array
+     */
+    private static Set<Symbol.Pair> getPairs(Symbol[] symbols) {
+        Set<Symbol.Pair> pairs = new HashSet<>();
+
+        for (int i = 0; i < symbols.length - 1; i++)
+            pairs.add(new Symbol.Pair(symbols[i], symbols[i + 1]));
+
+        return pairs;
+    }
+
+
+    /**
+     * This private utility method splits a Symbol in a SymbolPair using a Rule.
      * This is typically during the recursive split using vocabulary.
      * <p>
      * It must be already verified that the symbol matches the rule.
      *
      * @return a SymbolPair obtained by splitting the passed Symbol using the passed BPE Rule
      */
-    private SymbolPair splitByRule(Symbol symbol, Rule rule) {
+    private Symbol.Pair splitByRule(Symbol symbol, Rule rule) {
 
         /* the appended content for the last symbol  */
         String leftSubword = rule.leftSubword;
@@ -359,7 +574,7 @@ public class BPE {
                 symbol.startIndex + leftSubword.length() + rightSubword.length(),
                 rightAppendedContent);
 
-        return new SymbolPair(left, right);
+        return new Symbol.Pair(left, right);
     }
 
 
@@ -377,7 +592,7 @@ public class BPE {
      *
      * @return true if there is a Rule matching the SymbolPair; false if there is not.
      */
-    public boolean hasRuleFor(SymbolPair bigram) {
+    public boolean hasRuleFor(Symbol.Pair bigram) {
         return this.rule2priority.containsKey(new Rule(
                 bigram.leftSymbol.getContentWithout(separator),
                 bigram.rightSymbol.getContentWithout(separator)));
@@ -424,7 +639,7 @@ public class BPE {
      *
      * @return the set containing the pairs of consecutive symbols obtained from the initial symbol list
      */
-    public Integer getPriorityFor(SymbolPair pair) {
+    public Integer getPriorityFor(Symbol.Pair pair) {
         return this.getPriorityFor(new Rule(pair.leftSymbol.getContentWithout(separator), pair.rightSymbol.getContentWithout(separator)));
     }
 
@@ -436,6 +651,16 @@ public class BPE {
      */
     public Integer getPriorityFor(Rule rule) {
         return this.rule2priority.getOrDefault(rule, Integer.MAX_VALUE);
+    }
+
+
+    public static void main(String[] args) {
+        HashMap<Integer, Integer> m1 = new HashMap<>();
+        m1.put(1, 1);
+        HashMap<Integer, Integer> m2 = new HashMap<>();
+        m2.putAll(m1);
+        m2.put(1, 2);
+        System.out.println(m1.get(1));
     }
 
 }

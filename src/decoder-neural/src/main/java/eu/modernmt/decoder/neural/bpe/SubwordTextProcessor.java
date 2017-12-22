@@ -55,10 +55,10 @@ public class SubwordTextProcessor {
 
         /*read the source codes (rules with priority) from the model file*/
         int sourceCodesSize = Integer.parseInt(StringUtils.strip(inp.readLine(), "\n"));
-        Map<BPE.Rule, Integer> sourceCodes = new HashMap<>(sourceCodesSize);
+        Map<Rule, Integer> sourceCodes = new HashMap<>(sourceCodesSize);
         for (int i = 0; i < sourceCodesSize; i++) {
             String[] linefields = StringUtils.strip(inp.readLine(), "\n").split(" ");
-            sourceCodes.put(new BPE.Rule(linefields[0], linefields[1]), Integer.parseInt(linefields[2]));
+            sourceCodes.put(new Rule(linefields[0], linefields[1]), Integer.parseInt(linefields[2]));
         }
 
         /*read the source terms from the model file*/
@@ -69,10 +69,10 @@ public class SubwordTextProcessor {
 
         /*read the target codes (rules with priority) from the model file*/
         int targetCodesSize = Integer.parseInt(StringUtils.strip(inp.readLine(), "\n"));
-        Map<BPE.Rule, Integer> targetCodes = new HashMap<>(targetCodesSize);
+        Map<Rule, Integer> targetCodes = new HashMap<>(targetCodesSize);
         for (int i = 0; i < targetCodesSize; i++) {
             String[] linefields = StringUtils.strip(inp.readLine(), "\n").split(" ");
-            targetCodes.put(new BPE.Rule(linefields[0], linefields[1]), Integer.parseInt(linefields[2]));
+            targetCodes.put(new Rule(linefields[0], linefields[1]), Integer.parseInt(linefields[2]));
         }
 
         /*read the target terms from the model file*/
@@ -84,7 +84,7 @@ public class SubwordTextProcessor {
         return new SubwordTextProcessor(sourceCodes, sourceSubwords, targetCodes, targetSubwords, separator);
     }
 
-    public SubwordTextProcessor(Map<BPE.Rule, Integer> sourceCodes, Set<String> sourceTerms, Map<BPE.Rule, Integer> targetCodes, Set<String> targetTerms, String separator) {
+    public SubwordTextProcessor(Map<Rule, Integer> sourceCodes, Set<String> sourceTerms, Map<Rule, Integer> targetCodes, Set<String> targetTerms, String separator) {
         this.separator = separator;
         this.sourceBPE = new BPE(sourceCodes, separator);
         this.sourceTerms = sourceTerms;

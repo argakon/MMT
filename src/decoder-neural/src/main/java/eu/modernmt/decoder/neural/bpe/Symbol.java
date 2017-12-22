@@ -108,4 +108,39 @@ public class Symbol {
         return new Symbol(prev.original, prev.startIndex, next.endIndex, next.suffix);
     }
 
+
+    /**
+     * A SymbolPair represents a couple of consecutive symbols that appear in a string to encode using this BPE model.
+     * <p>
+     * A Symbol is a text that may or may not correspond to a BPE Subword.
+     * Symbols are typically used by a BPE model while progressively splitting and re-merging a string to encode.
+     */
+    public static class Pair {
+        public final Symbol leftSymbol;
+        public final Symbol rightSymbol;
+
+        public Pair(Symbol leftSymbol, Symbol rightSymbol) {
+            this.leftSymbol = leftSymbol;
+            this.rightSymbol = rightSymbol;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+
+            Pair that = (Pair) o;
+
+            if (leftSymbol != null ? !leftSymbol.equals(that.leftSymbol) : that.leftSymbol != null) return false;
+            return rightSymbol != null ? rightSymbol.equals(that.rightSymbol) : that.rightSymbol == null;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = leftSymbol != null ? leftSymbol.hashCode() : 0;
+            result = 31 * result + (rightSymbol != null ? rightSymbol.hashCode() : 0);
+            return result;
+        }
+    }
+
 }
