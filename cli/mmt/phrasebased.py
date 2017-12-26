@@ -81,6 +81,7 @@ class InterpolatedLM(MosesFeature):
 
         merge_command = self._vb.get_encode_command(static_lm_corpora)
         slm_command = [self._create_slm_bin, '--discount-fallback', '-o', str(self._order),
+                       '-S', '10G',
                        '-a', str(self._compression), '-q', str(self._quantization), '--type', 'trie',
                        '--model', static_lm_model,
                        '-T', static_lm_wdir]
