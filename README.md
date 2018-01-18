@@ -1,4 +1,4 @@
-# MMT 2.1 - Neural Adaptive Machine Translation
+# MMT 2.3 - Neural Adaptive Machine Translation
 We think that artificial intelligence is going to be the next big thing in our nearby future. It will bring humanity to a new era of access and organization of information.
 Language translation is probably the most complex of the human tasks for a machine to learn but it is also the one with the greatest potential to make the world a single family.
 
@@ -158,15 +158,14 @@ MMT Community is free, is open source and welcomes contributions and donations.
 MMT Community is sponsored by its funding members (Translated, FBK, UEDIN and TAUS) and the European Commission. 
 
 We also have an **MMT Enterprise Edition**, managed by the MMT company and not available on GitHub, with some extra features:
-- Pre-trained generic and custom models in 14 language pairs (and more to come!) on multiple billion words of premium data.
+- Pre-trained generic and custom models in 9 language pairs (and more to come!) on multiple billion words of premium data.
 - Support for cluster of servers for higher throughput, load balancing and high availability. 
 - Support for 69 files formats without format loss (Office, Adobe, Localization, etc).
-- Enterprise Customer Support via Video Conference Call, Phone and Email on business hours and optionally 24x7.
+- Enterprise Customer Support via Video Conference Call, Phone and Email on business hours (CET) and optionally 24x7.
 - Custom developments billed per hour of work.
 
-MMT Enterprise is avaialble in 3 operating modes:
-- On **Customer Premises**. Maxmimum security, higher cost for throughput and high availability.
-- On **dedicated servers** on Amazon Web Services. Excellent security, mid cost for throughput and high availability.
-- **Shared servers** on Amazon Web Services. Good Security, Low cost for excellent throughput and high availability.
+MMT Enterprise is avaialble in two cloud-based operating modes:
+- **Private**  Privacy of data, adaptivity, low cost for excellent throughput and maintenance, customer support.
+- **Confidential** Higher privacy of data, adaptivity, higher cost for throughput and maintenance, customer support.
 
-For any information please email Marcello Federico, mrcfdr@gmail.com
+We can provide support for large **On-Premise** installations, too. For any information please email Marcello Federico, marcello@modenrmt.eu

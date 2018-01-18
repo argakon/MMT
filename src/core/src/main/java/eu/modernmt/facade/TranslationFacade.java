@@ -11,6 +11,7 @@ import eu.modernmt.decoder.*;
 import eu.modernmt.engine.Engine;
 import eu.modernmt.facade.exceptions.TranslationException;
 import eu.modernmt.facade.exceptions.TranslationRejectedException;
+import eu.modernmt.lang.Language;
 import eu.modernmt.lang.LanguageIndex;
 import eu.modernmt.lang.LanguagePair;
 import eu.modernmt.lang.UnsupportedLanguageException;
@@ -19,6 +20,8 @@ import eu.modernmt.processing.Postprocessor;
 import eu.modernmt.processing.Preprocessor;
 import eu.modernmt.processing.ProcessingException;
 import eu.modernmt.processing.splitter.SentenceSplitter;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.File;
 import java.util.*;
@@ -30,6 +33,8 @@ import java.util.concurrent.RejectedExecutionException;
  * Created by davide on 31/01/17.
  */
 public class TranslationFacade {
+
+    private static final Logger logger = LogManager.getLogger(TranslationFacade.class);
 
     public enum Priority {
         HIGH(0), NORMAL(1), BACKGROUND(2);  //three priority values are allowed
@@ -104,7 +109,12 @@ public class TranslationFacade {
             if (future == null)
                 future = node.submit(task);
 
-            return future.get();
+            Translation translation = future.get();
+
+            if (logger.isDebugEnabled())
+                logger.debug("Translation of " + translation.getSource().length() + " words took " + (((double) translation.getElapsedTime()) / 1000.) + "s");
+
+            return translation;
         } catch (InterruptedException e) {
             throw new SystemShutdownException(e);
         } catch (ExecutionException e) {
@@ -133,7 +143,7 @@ public class TranslationFacade {
         return analyzer.getContextVector(direction, context, limit);
     }
 
-    public Map<Locale, ContextVector> getContextVectors(File context, int limit, Locale source, Locale... targets) throws ContextAnalyzerException {
+    public Map<Language, ContextVector> getContextVectors(File context, int limit, Language source, Language... targets) throws ContextAnalyzerException {
         List<LanguagePair> languages = filterUnsupportedLanguages(source, targets);
 
         if (languages.isEmpty())
@@ -142,7 +152,7 @@ public class TranslationFacade {
         Engine engine = ModernMT.getNode().getEngine();
         ContextAnalyzer analyzer = engine.getContextAnalyzer();
 
-        HashMap<Locale, ContextVector> result = new HashMap<>(languages.size());
+        HashMap<Language, ContextVector> result = new HashMap<>(languages.size());
         for (LanguagePair direction : languages) {
             ContextVector contextVector = analyzer.getContextVector(direction, context, limit);
             result.put(direction.target, contextVector);
@@ -160,7 +170,7 @@ public class TranslationFacade {
         return analyzer.getContextVector(direction, context, limit);
     }
 
-    public Map<Locale, ContextVector> getContextVectors(String context, int limit, Locale source, Locale... targets) throws ContextAnalyzerException {
+    public Map<Language, ContextVector> getContextVectors(String context, int limit, Language source, Language... targets) throws ContextAnalyzerException {
         List<LanguagePair> languages = filterUnsupportedLanguages(source, targets);
 
         if (languages.isEmpty())
@@ -169,7 +179,7 @@ public class TranslationFacade {
         Engine engine = ModernMT.getNode().getEngine();
         ContextAnalyzer analyzer = engine.getContextAnalyzer();
 
-        HashMap<Locale, ContextVector> result = new HashMap<>(languages.size());
+        HashMap<Language, ContextVector> result = new HashMap<>(languages.size());
         for (LanguagePair direction : languages) {
             ContextVector contextVector = analyzer.getContextVector(direction, context, limit);
             result.put(direction.target, contextVector);
@@ -207,11 +217,11 @@ public class TranslationFacade {
             throw new UnsupportedLanguageException(pair);
     }
 
-    private List<LanguagePair> filterUnsupportedLanguages(Locale source, Locale[] targets) {
+    private List<LanguagePair> filterUnsupportedLanguages(Language source, Language[] targets) {
         ArrayList<LanguagePair> result = new ArrayList<>(targets.length);
 
         LanguageIndex languages = ModernMT.getNode().getEngine().getLanguages();
-        for (Locale target : targets) {
+        for (Language target : targets) {
             LanguagePair language = new LanguagePair(source, target);
 
             if (languages.isSupported(language))
@@ -250,6 +260,8 @@ public class TranslationFacade {
             Postprocessor postprocessor = engine.getPostprocessor();
 
             try {
+                long begin = System.currentTimeMillis();
+
                 Sentence sentence = preprocessor.process(direction, text);
                 Translation translation;
 
@@ -293,6 +305,9 @@ public class TranslationFacade {
                     }
                     postprocessor.process(direction, hypotheses);
                 }
+
+                translation.setElapsedTime(System.currentTimeMillis() - begin);
+
                 return translation;
             } catch (ProcessingException e) {
                 throw new TranslationException("Problem while processing translation", e);
@@ -305,13 +320,14 @@ public class TranslationFacade {
 
         /**
          * This private method asks the passed Engine to translate one single sentence
+         *
          * @param sentence the Sentence object to translate
-         * @param engine the engine to which the translation must be requested
+         * @param engine   the engine to which the translation must be requested
          * @return the obtained Translation
          * @throws DecoderException if there is an error in the Decoding process
          * @throws AlignerException if there is an error while computing the alignments
          */
-        private Translation translate(Sentence sentence, Engine engine) throws DecoderException, AlignerException{
+        private Translation translate(Sentence sentence, Engine engine) throws DecoderException, AlignerException {
             Decoder decoder = engine.getDecoder();
 
             Translation translation;
@@ -327,17 +343,18 @@ public class TranslationFacade {
 
         /**
          * This private method asks the passed Engine to translate, one by one, the passed sentences
+         *
          * @param sentences an array containing the Sentence objects to translate
-         * @param engine the engine to which the translations must be requested
+         * @param engine    the engine to which the translations must be requested
          * @return an array containing, for each passed Sentence, the corresponding Translation
          * @throws DecoderException if there is an error in the Decoding process
          * @throws AlignerException if there is an error while computing the alignments
          */
-        private Translation[] translate(Sentence[] sentences, Engine engine) throws DecoderException, AlignerException{
+        private Translation[] translate(Sentence[] sentences, Engine engine) throws DecoderException, AlignerException {
 
             Translation[] translations = new Translation[sentences.length];
 
-            for(int i = 0; i < sentences.length; i++)
+            for (int i = 0; i < sentences.length; i++)
                 translations[i] = this.translate(sentences[i], engine);
 
             return translations;
@@ -346,14 +363,14 @@ public class TranslationFacade {
         /**
          * This private method merges a group of split translations back into a single Translation.
          * If necessary, it also takes into account the Translation NBests.
-         *
+         * <p>
          * This method is typically called by the TranslationTaskImpl "translate" method when
          * the original sentence was split into multiple sentences and it needs
          * It is first used on the obtained split translation and then, if those translation had NBests too,
          * it is also called iteratively on their NBests to merge them too.
          *
-         * @param originalSentence the original Sentence to translate
-         * @param splitSentences the sub-sentences obtained by splitting the first Sentence
+         * @param originalSentence  the original Sentence to translate
+         * @param splitSentences    the sub-sentences obtained by splitting the first Sentence
          * @param splitTranslations the sub-translations obtained by translating the sub-sentences one by one
          * @return the Translation obtained by merging the sub-translations back into one
          */
@@ -390,21 +407,21 @@ public class TranslationFacade {
         /**
          * This private method merges a group of split translations back into a single Translation
          * without taking into account the Translation NBests.
-         *
+         * <p>
          * This method is typically called by the TranslationTaskImpl "merge" method when
          * the original sentence was split into multiple sentences and so multiple translations were obtained.
          * It is first used on the obtained split translation and then, if those translation had NBests too,
          * it is also called iteratively on their NBests to merge them too.
          *
-         * @param originalSentence the original Sentence to translate
-         * @param splitSentences the sub-sentences obtained by splitting the first Sentence
+         * @param originalSentence  the original Sentence to translate
+         * @param splitSentences    the sub-sentences obtained by splitting the first Sentence
          * @param splitTranslations the sub-translations obtained by translating the sub-sentences one by one
          * @return the Translation obtained by merging the sub-translations back into one
          */
         private Translation join(Sentence originalSentence, Sentence[] splitSentences, Translation[] splitTranslations) {
 
             /* get the sizes for the data structures of the "global" translation: wordsSize, wordAlignmentSize.
-            * [do not use tags because they are still projected in the translation */
+             * [do not use tags because they are still projected in the translation */
             int globalWordsSize = 0;
             int globalWordAlignmentSize = 0;
             for (Translation splitTranslation : splitTranslations) {
@@ -424,6 +441,8 @@ public class TranslationFacade {
             int trgWordsOffset = 0; /* in each iteration, this is the amount of trg words seen in the previous sentences*/
             /* this is the latest visited position in the global indexes in the last iteration*/
             int latestGlobalPosition = 0;
+            float score = 0;
+
             for (int sentenceIndex = 0; sentenceIndex < splitTranslations.length; sentenceIndex++) {
                 Translation splitTranslation = splitTranslations[sentenceIndex];
                 Sentence splitSentence = splitSentences[sentenceIndex];
@@ -433,8 +452,12 @@ public class TranslationFacade {
 
                 /*merge alignments if alignment must be considered*/
                 if (splitTranslation.hasAlignment()) {
-                    int[] localSrcIndexes = splitTranslation.getWordAlignment().getSourceIndexes();   // possibly not initialized
-                    int[] localTrgIndexes = splitTranslation.getWordAlignment().getTargetIndexes();   // possibly not initialized
+                    Alignment wordAlignment = splitTranslation.getWordAlignment();
+
+                    score += wordAlignment.getScore();
+
+                    int[] localSrcIndexes = wordAlignment.getSourceIndexes();   // possibly not initialized
+                    int[] localTrgIndexes = wordAlignment.getTargetIndexes();   // possibly not initialized
                     for (int localIndex = 0; localIndex < localSrcIndexes.length; localIndex++)
                         globalSrcIndexes[localIndex + latestGlobalPosition] = localSrcIndexes[localIndex] + srcWordsOffset;
                     for (int localIndex = 0; localIndex < localTrgIndexes.length; localIndex++)
@@ -451,7 +474,8 @@ public class TranslationFacade {
                 trgWordsOffset += splitTranslation.length();
             }
 
-            Alignment globalAlignment = new Alignment(globalSrcIndexes, globalTrgIndexes);
+            score /= splitTranslations.length;
+            Alignment globalAlignment = new Alignment(globalSrcIndexes, globalTrgIndexes, score);
 
             Translation globalTranslation = new Translation(globalWords, originalSentence, globalAlignment);
             globalTranslation.setElapsedTime(globalElapsedTime);
